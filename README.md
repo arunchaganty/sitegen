@@ -15,6 +15,10 @@ Features
 * Tag support
 * Version control might be a future feature.
 
+Installing
+----------
+You will need to copy the webpage.conf.tmpl to webpage.conf. 
+
 File and Index Generation
 -------------------------
 Every git push activates a script (python) that processes the files, and
