@@ -36,6 +36,13 @@ def get_current_rev( conf ):
     else:
         return None
 
+def save_current_rev( conf, repo ):
+    """Try to the current revision from the meta files"""
+    meta = conf.get( "paths", "meta" )
+    rev = repo.commit().hexsha
+    open( os.path.join( meta, "current_rev" ), "w" ).write( rev )
+
+
 def get_changelist( conf, repo, rev=None ):
     """Get list of files that have changed since the last update""" 
     #TODO: Handle ignore lists
@@ -43,7 +50,7 @@ def get_changelist( conf, repo, rev=None ):
         # if a last update exists, then find diffs since the last rev
         diffs = repo.index.diff( rev )
         # Add all the b_blobs of this list
-        updates = it.ifilter( None, map( lambda d: d.b_blob, diffs ) ) 
+        updates = list( it.ifilter( None, map( lambda d: d.b_blob, diffs ) )  )
         deletes = map( lambda d: d.a_blob, it.chain(
             diffs.iter_change_type('D'), diffs.iter_change_type('R') ) )
     # Otherwise, just make everything in the gitrepo
@@ -104,6 +111,9 @@ def main( conf_path ):
     logging.info( "Updating %d, Deleting %d"%(len(updates), len(deletes)) )
     update_files( conf, updates )
     delete_files( conf, deletes )
+
+    # Save the current revision to the meta file
+    save_current_rev(conf, repo)
 
     # Create indexes for all the sections
     # TODO:
