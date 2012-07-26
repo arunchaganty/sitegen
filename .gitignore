@@ -1,0 +1,30 @@
+# Temporary Files
+*.swp
+*.swo
+*.pyc
+*.pyo
+*.o
+cscope.out
+tags
+
+# TeX
+*.log
+*.aux
+*.out
+*.nav
+*.toc
+*.snm
+*.pdf
+*.dvi
+*_tmp.*
+
+# Data
+*.dot
+*.png
+*.mat
+*.dat
+output/
+output-*/
+data-*/
+
+# Temporary stuff
