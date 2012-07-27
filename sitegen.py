@@ -4,27 +4,53 @@ sitegen.py is a static site generator for arun.chagantys.org
 """
 
 import os
-import shutil
 import git
+import logging
+import tempfile
+import subprocess as sp
 import ConfigParser as CP
 import itertools as it
-import logging
 
-PANDOC_EXTN = ".pdc"
+PANDOC_EXTN = ".md"
 
-def compile_index( conf, tree, target ):
-    """Compile an index of articles from a git tree""" 
-    pass
+# def compile_index( conf, tree, target ):
+#     """Compile an index of articles from a git tree""" 
+#     pass
+
+def save_theme( conf, repo ):
+    """Save the theme file from the git repo to a usable location"""
+    theme = conf.get( "paths", "theme" )
+    meta = conf.get( "paths", "meta" )
+    blob = repo.tree()[ theme ]
+    # Save to meta folder
+    blob.stream_data( open( os.path.join(meta, "theme.html"), "w") )
+    return os.path.join(meta, "theme.html")
 
 def save_file( conf, blob, target ):
     """Save a blob as in to target""" 
     fstream = open( target, "w" )
     blob.stream_data( fstream )
     fstream.close()
+    logging.info( "Copied over %s", target )
 
 def compile_file( conf, blob, target ):
     """Compile an article from a git blob""" 
-    logging.info( "Compiling file %s to target %s"%( blob.path, target ) )
+    meta = conf.get( "paths", "meta" )
+    theme_path = os.path.join( meta, "theme.html" )
+    
+    path = os.path.join( meta, "_compile.md" )
+    f = open( path, "w+b" )
+    blob.stream_data( f )
+    f.close()
+    # Save theme file to 
+    cmd = "pandoc -S -s --template %s -o %s %s" % (
+            theme_path, target, path )
+    proc = sp.Popen( cmd.split() )
+    if proc.wait() == 0:
+        logging.info( "Compiled file %s to target %s", blob.path, target)
+    else:
+        logging.info( "Error compiling file %s to target %s", blob.path,
+                target )
 
 def get_current_rev( conf ):
     """Try to the current revision from the meta files"""
@@ -42,10 +68,9 @@ def save_current_rev( conf, repo ):
     rev = repo.commit().hexsha
     open( os.path.join( meta, "current_rev" ), "w" ).write( rev )
 
-
 def get_changelist( conf, repo, rev=None ):
     """Get list of files that have changed since the last update""" 
-    #TODO: Handle ignore lists
+    ignores = conf.get( "paths", "ignores" )
     if rev:
         # if a last update exists, then find diffs since the last rev
         diffs = repo.index.diff( rev )
@@ -59,6 +84,9 @@ def get_changelist( conf, repo, rev=None ):
                 repo.tree().traverse())
         # TODO: Compare with existing files, and prune.
         deletes = []
+    # Filter updates and deletes from the ignores list
+    updates = filter( lambda b: b.name not in ignores, updates )
+    deletes = filter( lambda b: b.name not in ignores, deletes )
     return updates, deletes
 
 def update_files( conf, updates ):
@@ -87,7 +115,7 @@ def delete_files( conf, deletes ):
         path = os.path.join( outgoing, path )
         if os.path.exists( path ):
             os.unlink( path )
-            logging.info( "Deleted %s"%(path))
+            logging.info( "Deleted %s", path)
 
 def main( conf_path ):
     """Sitegen entry point"""
@@ -106,21 +134,23 @@ def main( conf_path ):
     # Check the repo
     repo = git.Repo( incoming )
 
+    # Save the theme
+    save_theme( conf, repo )
+
     # Get updates
     updates, deletes = get_changelist( conf, repo, get_current_rev( conf ) )
-    logging.info( "Updating %d, Deleting %d"%(len(updates), len(deletes)) )
+    logging.info( "Updating %d, Deleting %d", len(updates), len(deletes) )
     update_files( conf, updates )
     delete_files( conf, deletes )
-
-    # Save the current revision to the meta file
-    save_current_rev(conf, repo)
 
     # Create indexes for all the sections
     # TODO:
     # sections = map( str.strip, conf.get("root","sections").split(',') )
 
+    # Save the current revision to the meta file
+    #save_current_rev(conf, repo)
+
 if __name__ == "__main__":
-    import sys
     import argparse
 
     parser = argparse.ArgumentParser( description = "Static site generator" )

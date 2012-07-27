@@ -1,5 +1,4 @@
 * Grab objects from a git repo; run them by pandoc
-  + List of all files, and stream them to pandoc
   + Create an index page of articles, and create a pandoc file
 * Convert wordpress entries to markdown.
   + Download backup database, and process.
