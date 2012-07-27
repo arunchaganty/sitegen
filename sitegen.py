@@ -17,20 +17,32 @@ PANDOC_EXTN = ".md"
 #     """Compile an index of articles from a git tree""" 
 #     pass
 
+def replace_constants( conf, target ):
+    """Replace any of the predefined constants in files"""
+    urlroot = conf.get( "paths", "urlroot" )
+    # Call sed (it's probably more efficient)
+    cmd = 'sed -i -e s#@ROOT@#%s#g %s'%(urlroot, target)
+    p = sp.Popen( cmd.split() )
+    p.wait()
+
 def save_theme( conf, repo ):
     """Save the theme file from the git repo to a usable location"""
     theme = conf.get( "paths", "theme" )
     meta = conf.get( "paths", "meta" )
     blob = repo.tree()[ theme ]
     # Save to meta folder
-    blob.stream_data( open( os.path.join(meta, "theme.html"), "w") )
-    return os.path.join(meta, "theme.html")
+    path = os.path.join(meta, "theme.html")
+    blob.stream_data( open( path, "w") )
+    replace_constants( conf, path )
+    return path
 
 def save_file( conf, blob, target ):
     """Save a blob as in to target""" 
     fstream = open( target, "w" )
     blob.stream_data( fstream )
     fstream.close()
+    replace_constants( conf, target )
+    # Replace all occurances of @ROOT@ with
     logging.info( "Copied over %s", target )
 
 def compile_file( conf, blob, target ):
@@ -42,6 +54,7 @@ def compile_file( conf, blob, target ):
     f = open( path, "w+b" )
     blob.stream_data( f )
     f.close()
+    replace_constants( conf, path )
     # Save theme file to 
     cmd = "pandoc -S -s --template %s -o %s %s" % (
             theme_path, target, path )
