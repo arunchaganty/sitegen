@@ -176,6 +176,22 @@ def delete_files( conf, deletes ):
             os.unlink( path )
             logging.info( "Deleted %s", path)
 
+def has_index( conf, repo, section ):
+    """Checks if the section already has an index file"""
+    tree = repo.tree()
+    # HACK because "path in tree" doesn't work.
+    try:
+        if tree[os.path.join(section,"index.md")] != None:
+            return True
+    except KeyError:
+        pass
+    try:
+        if tree[os.path.join(section,"index.html")] != None:
+            return True
+    except KeyError:
+        pass
+    return False
+
 def create_indexes( conf, repo ):
     """Create indexes for the sections in repo"""
     outgoing = conf.get( "paths", "outgoing" )
@@ -186,8 +202,8 @@ def create_indexes( conf, repo ):
         if section not in tree:
             continue
         # Check if the index already exists
-        if ( (section+"/index.md" in tree) or 
-                (section+"/index.html" in tree) ):
+        if has_index( conf, repo, section ):
+            logging.info( "Not generating log for %s; already exists", section)
             continue
         else:
             section_tree = tree[section]
