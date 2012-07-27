@@ -5,25 +5,79 @@ sitegen.py is a static site generator for arun.chagantys.org
 
 import os
 import git
+import time
 import logging
-import tempfile
 import subprocess as sp
 import ConfigParser as CP
 import itertools as it
 
 PANDOC_EXTN = ".md"
 
-# def compile_index( conf, tree, target ):
-#     """Compile an index of articles from a git tree""" 
-#     pass
+def run_pandoc( conf, src, target ):
+    """Run pandoc on src to target. Uses conf to get theme"""
+    meta = conf.get( "paths", "meta" )
+    theme_path = os.path.join( meta, "theme.html" )
+    cmd = "pandoc -S -s --template %s -o %s %s" % ( theme_path, target,
+            src )
+
+    proc = sp.Popen( cmd.split() )
+    if proc.wait() == 0:
+        logging.info( "Compiled file %s", target)
+    else:
+        logging.info( "Error compiling file %s", target )
+
+def compile_index( conf, repo, tree, target ):
+    """Compile an index of articles from a git tree""" 
+    # Get a list of files, their creation date, and last modification
+    # date
+    meta = conf.get( "paths", "meta" )
+    temp = os.path.join( meta, "_compile.md" )
+
+    idx = []
+    for blob in tree.blobs:
+        if blob.path.endswith(".html") or blob.path.endswith(PANDOC_EXTN):
+            # First line is reserved for title
+            blob.stream_data( open( temp, "w+b") )
+            title = open( temp ).readline().strip()
+            # If title starts with a %, delete
+            if title.startswith("%"):
+                title = title[1:].strip()
+
+            # Get the commit times
+            commits = repo.blame( "HEAD", blob.path )
+            created = time.strptime( time.ctime(
+                commits[0][0].committed_date ) )
+            updated = time.strptime( time.ctime(
+                commits[-1][0].committed_date ) )
+
+            # Correct for compiled paths
+            if blob.path.endswith(".html"):
+                path = blob.path
+            else:
+                path = blob.path[:-len(PANDOC_EXTN)] + ".html"
+            idx.append( (title, created, updated, path) )
+
+    # Construct a markdown file from this
+    fstream = open( temp, "w" )
+    fstream.write( "%% %s\n\n"%(tree.name.capitalize()) )
+    idx.sort( key=lambda i: i[1] )
+    for i in range(len(idx)):
+        title, created, updated, path = idx[i]
+        fstream.write( " %d. [%s](%s) _(Updated: %s)_\n"%( i+1, title, path,
+            time.strftime( "%d %b %Y", updated) ) )
+    fstream.close()
+
+    # Compile it
+    run_pandoc( conf, temp, target )
 
 def replace_constants( conf, target ):
     """Replace any of the predefined constants in files"""
     urlroot = conf.get( "paths", "urlroot" )
     # Call sed (it's probably more efficient)
-    cmd = 'sed -i -e s#@ROOT@#%s#g %s'%(urlroot, target)
-    p = sp.Popen( cmd.split() )
-    p.wait()
+    cmd = 'sed -i -e s#@ROOT@#%s#g %s' % (urlroot, target)
+    proc = sp.Popen( cmd.split() )
+    proc.wait()
+
 
 def save_theme( conf, repo ):
     """Save the theme file from the git repo to a usable location"""
@@ -48,22 +102,14 @@ def save_file( conf, blob, target ):
 def compile_file( conf, blob, target ):
     """Compile an article from a git blob""" 
     meta = conf.get( "paths", "meta" )
-    theme_path = os.path.join( meta, "theme.html" )
     
     path = os.path.join( meta, "_compile.md" )
-    f = open( path, "w+b" )
-    blob.stream_data( f )
-    f.close()
+    fstream = open( path, "w+b" )
+    blob.stream_data( fstream )
+    fstream.close()
     replace_constants( conf, path )
-    # Save theme file to 
-    cmd = "pandoc -S -s --template %s -o %s %s" % (
-            theme_path, target, path )
-    proc = sp.Popen( cmd.split() )
-    if proc.wait() == 0:
-        logging.info( "Compiled file %s to target %s", blob.path, target)
-    else:
-        logging.info( "Error compiling file %s to target %s", blob.path,
-                target )
+
+    run_pandoc( conf, path, target )
 
 def get_current_rev( conf ):
     """Try to the current revision from the meta files"""
@@ -130,12 +176,27 @@ def delete_files( conf, deletes ):
             os.unlink( path )
             logging.info( "Deleted %s", path)
 
+def create_indexes( conf, repo ):
+    """Create indexes for the sections in repo"""
+    outgoing = conf.get( "paths", "outgoing" )
+    sections = map( str.strip, conf.get("root","sections").split(',') )
+
+    for section in sections:
+        try:
+            section_tree = repo.tree()[section]
+            target = os.path.join( outgoing, section, "index.html" )
+            compile_index( conf, repo, section_tree, target )
+            logging.info( "Built index for section %s", section )
+        except KeyError:
+            # The section doesn't currently exist
+            continue
+        
+
 def main( conf_path ):
     """Sitegen entry point"""
     conf = CP.ConfigParser()
     conf.read( conf_path )
     incoming = conf.get( "paths", "incoming" )
-    outgoing = conf.get( "paths", "outgoing" )
     meta = conf.get( "paths", "meta" )
 
     if not os.path.exists( meta ):
@@ -157,19 +218,19 @@ def main( conf_path ):
     delete_files( conf, deletes )
 
     # Create indexes for all the sections
-    # TODO:
-    # sections = map( str.strip, conf.get("root","sections").split(',') )
+    create_indexes( conf, repo )
 
-    # Save the current revision to the meta file
+    # Save the current revision to the meta file for incremental updates
     #save_current_rev(conf, repo)
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser( description = "Static site generator" )
-    parser.add_argument( "--conf", dest="conf", default="website.conf",
+    # TODO: Add flag for no-incremental
+    PARSER = argparse.ArgumentParser( description = "Static site generator" )
+    PARSER.add_argument( "--conf", dest="conf", default="website.conf",
             help="Path to configuration file" ) 
-    args = parser.parse_args()
+    ARGS = PARSER.parse_args()
 
-    main( args.conf )
+    main( ARGS.conf )
 
