@@ -195,7 +195,7 @@ def create_indexes( conf, repo ):
             compile_index( conf, repo, section_tree, target )
             logging.info( "Built index for section %s", section )
         
-def main( conf_path ):
+def main( conf_path, incremental = False ):
     """Sitegen entry point"""
     conf = CP.ConfigParser()
     conf.read( conf_path )
@@ -215,7 +215,8 @@ def main( conf_path ):
     save_theme( conf, repo )
 
     # Get updates
-    updates, deletes = get_changelist( conf, repo, get_current_rev( conf ) )
+    rev = get_current_rev( conf ) if incremental else None
+    updates, deletes = get_changelist( conf, repo, rev )
     logging.info( "Updating %d, Deleting %d", len(updates), len(deletes) )
     update_files( conf, updates )
     delete_files( conf, deletes )
@@ -224,16 +225,17 @@ def main( conf_path ):
     create_indexes( conf, repo )
 
     # Save the current revision to the meta file for incremental updates
-    #save_current_rev(conf, repo)
+    save_current_rev(conf, repo)
 
 if __name__ == "__main__":
     import argparse
 
-    # TODO: Add flag for no-incremental
     PARSER = argparse.ArgumentParser( description = "Static site generator" )
     PARSER.add_argument( "--conf", dest="conf", default="website.conf",
             help="Path to configuration file" ) 
+    PARSER.add_argument( "-i", dest="incremental", action='store_true',
+            default=False, help="Incrementally generate files" ) 
     ARGS = PARSER.parse_args()
 
-    main( ARGS.conf )
+    main( ARGS.conf, ARGS.incremental )
 
