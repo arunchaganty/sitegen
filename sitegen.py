@@ -181,17 +181,20 @@ def create_indexes( conf, repo ):
     outgoing = conf.get( "paths", "outgoing" )
     sections = map( str.strip, conf.get("root","sections").split(',') )
 
+    tree = repo.tree()
     for section in sections:
-        try:
-            section_tree = repo.tree()[section]
+        if section not in tree:
+            continue
+        # Check if the index already exists
+        if ( (section+"/index.md" in tree) or 
+                (section+"/index.html" in tree) ):
+            continue
+        else:
+            section_tree = tree[section]
             target = os.path.join( outgoing, section, "index.html" )
             compile_index( conf, repo, section_tree, target )
             logging.info( "Built index for section %s", section )
-        except KeyError:
-            # The section doesn't currently exist
-            continue
         
-
 def main( conf_path ):
     """Sitegen entry point"""
     conf = CP.ConfigParser()
