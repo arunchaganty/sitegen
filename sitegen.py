@@ -39,6 +39,28 @@ def run_pandoc( conf, src, target ):
     else:
         logging.info( "Error compiling file %s", target )
 
+def extract_timestamps( conf, repo, blob, temp ):
+    """Extract a timestamp from a post file"""
+    # Get the commit times
+    commits = repo.blame( "HEAD", blob.path )
+
+    # First check if the % data exists
+    try:
+        lines = open( temp ).readlines()
+        if len( lines ) >= 3 and lines[2].startswith("%"):
+            created = time.strptime( lines[2][1:].strip() )
+        else:
+            raise Exception
+    except Exception:
+        created = time.strptime( time.ctime(
+            commits[0][0].committed_date ) )
+
+    updated = time.strptime( time.ctime(
+        commits[-1][0].committed_date ) )
+
+    return created, updated
+
+
 def compile_index( conf, repo, tree, target ):
     """Compile an index of articles from a git tree""" 
     # Get a list of files, their creation date, and last modification
@@ -56,12 +78,7 @@ def compile_index( conf, repo, tree, target ):
             if title.startswith("%"):
                 title = title[1:].strip()
 
-            # Get the commit times
-            commits = repo.blame( "HEAD", blob.path )
-            created = time.strptime( time.ctime(
-                commits[0][0].committed_date ) )
-            updated = time.strptime( time.ctime(
-                commits[-1][0].committed_date ) )
+            created, updated = extract_timestamps( conf, repo, blob, temp )
 
             # Correct for compiled paths
             if blob.path.endswith(".html"):
@@ -76,8 +93,8 @@ def compile_index( conf, repo, tree, target ):
     idx.sort( key=lambda i: i[1], reverse=True )
     for i in range(len(idx)):
         title, created, updated, path = idx[i]
-        fstream.write( " %d. [%s](@ROOT@/%s) _(Updated: %s)_\n"%( i+1, title, path,
-            time.strftime( "%d %b %Y", updated) ) )
+        fstream.write( " %d. [%s](@ROOT@/%s) _(%s)_\n"%( i+1, title, path,
+            time.strftime( "%d %b %Y", created) ) )
     fstream.close()
 
     # Compile it
