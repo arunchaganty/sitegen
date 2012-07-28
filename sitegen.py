@@ -17,6 +17,10 @@ def run_pandoc( conf, src, target ):
     """Run pandoc on src to target. Uses conf to get theme"""
     meta = conf.get( "paths", "meta" )
     theme_path = os.path.join( meta, "theme.html" )
+
+    if not os.path.exists( os.path.dirname( target ) ): 
+        os.makedirs( os.path.dirname( target ) )
+
     cmd = "pandoc -S -s --template %s -o %s %s" % ( theme_path, target,
             src )
 
@@ -154,8 +158,6 @@ def update_files( conf, updates ):
     # Compile all the files
     for blob in updates:
         path = os.path.join( outgoing, blob.path )
-        if not os.path.exists( os.path.dirname( path ) ): 
-            os.makedirs( os.path.dirname( path ) )
         if path.endswith( PANDOC_EXTN ):
             path = path[:-len(PANDOC_EXTN)] + ".html"
             compile_file( conf, blob, path )
@@ -219,7 +221,7 @@ def main( conf_path, incremental = False ):
     meta = conf.get( "paths", "meta" )
 
     if not os.path.exists( meta ):
-        os.mkdir( meta )
+        os.makedirs( meta )
     # Configure the logger 
     logging.basicConfig( filename=os.path.join( meta, "all.log" ),
             level=logging.DEBUG )
