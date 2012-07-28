@@ -13,6 +13,15 @@ import itertools as it
 
 PANDOC_EXTN = ".md"
 
+def replace_constants( conf, target ):
+    """Replace any of the predefined constants in files"""
+    urlroot = conf.get( "paths", "urlroot" )
+    # Call sed (it's probably more efficient)
+    cmd = 'sed -i -e s#@ROOT@#%s#g %s' % (urlroot, target)
+    proc = sp.Popen( cmd.split() )
+    proc.wait()
+
+
 def run_pandoc( conf, src, target ):
     """Run pandoc on src to target. Uses conf to get theme"""
     meta = conf.get( "paths", "meta" )
@@ -64,24 +73,16 @@ def compile_index( conf, repo, tree, target ):
     # Construct a markdown file from this
     fstream = open( temp, "w" )
     fstream.write( "%% %s\n\n"%(tree.name.capitalize()) )
-    idx.sort( key=lambda i: i[1] )
+    idx.sort( key=lambda i: i[1], reverse=True )
     for i in range(len(idx)):
         title, created, updated, path = idx[i]
-        fstream.write( " %d. [%s](%s) _(Updated: %s)_\n"%( i+1, title, path,
+        fstream.write( " %d. [%s](@ROOT@/%s) _(Updated: %s)_\n"%( i+1, title, path,
             time.strftime( "%d %b %Y", updated) ) )
     fstream.close()
 
     # Compile it
+    replace_constants( conf, temp )
     run_pandoc( conf, temp, target )
-
-def replace_constants( conf, target ):
-    """Replace any of the predefined constants in files"""
-    urlroot = conf.get( "paths", "urlroot" )
-    # Call sed (it's probably more efficient)
-    cmd = 'sed -i -e s#@ROOT@#%s#g %s' % (urlroot, target)
-    proc = sp.Popen( cmd.split() )
-    proc.wait()
-
 
 def save_theme( conf, repo ):
     """Save the theme file from the git repo to a usable location"""
