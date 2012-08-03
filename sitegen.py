@@ -30,7 +30,7 @@ def run_pandoc( conf, src, target ):
     if not os.path.exists( os.path.dirname( target ) ): 
         os.makedirs( os.path.dirname( target ) )
 
-    cmd = "pandoc -S -s --template %s -o %s %s" % ( theme_path, target,
+    cmd = "pandoc -s --template %s -o %s %s" % ( theme_path, target,
             src )
 
     proc = sp.Popen( cmd.split() )
@@ -114,6 +114,10 @@ def save_theme( conf, repo ):
 
 def save_file( conf, blob, target ):
     """Save a blob as in to target""" 
+
+    if not os.path.exists( os.path.dirname( target ) ): 
+        os.makedirs( os.path.dirname( target ) )
+
     fstream = open( target, "w" )
     blob.stream_data( fstream )
     fstream.close()
