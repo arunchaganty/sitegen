@@ -10,7 +10,6 @@ import logging
 import subprocess as sp
 import ConfigParser as CP
 import itertools as it
-
 PANDOC_EXTN = ".md"
 
 def replace_constants( conf, target ):
@@ -245,8 +244,10 @@ def main( conf_path, incremental = False ):
     if not os.path.exists( meta ):
         os.makedirs( meta )
     # Configure the logger 
+
+    FORMAT = '%(asctime)-15s %(message)s'
     logging.basicConfig( filename=os.path.join( meta, "all.log" ),
-            level=logging.DEBUG )
+            level=logging.DEBUG, format=FORMAT )
 
     # Check the repo
     repo = git.Repo( incoming )
