@@ -6,267 +6,348 @@ sitegen.py is a static site generator for arun.chagantys.org
 import os
 import git
 import time
+import string
+import mimetypes
 import logging
 import subprocess as sp
 import ConfigParser as CP
 import itertools as it
 PANDOC_EXTN = ".md"
 
-def replace_constants( conf, target ):
-    """Replace any of the predefined constants in files"""
-    urlroot = conf.get( "paths", "urlroot" )
-    # Call sed (it's probably more efficient)
-    cmd = 'sed -i -e s#@ROOT@#%s#g %s' % (urlroot, target)
-    proc = sp.Popen( cmd.split() )
-    proc.wait()
+pexists = os.path.exists
+pjoin = os.path.join
+dirname = os.path.dirname
+basename = os.path.basename
+
+mimetypes.add_type( "text/markdown", PANDOC_EXTN )
+
+def get_date( fmts, data ):
+    """Try to get the date by sequentially matching patterns"""
+    for fmt in fmts:
+        try:
+            return time.strptime( fmt, data )
+        except ValueError:
+            pass
+    # Use the default format
+    return time.strptime( data )
 
 
-def run_pandoc( conf, src, target ):
-    """Run pandoc on src to target. Uses conf to get theme"""
-    meta = conf.get( "paths", "meta" )
-    theme_path = os.path.join( meta, "theme.html" )
+class ChangeSet:
+    """Store set of changes"""
+    def __init__( self, rev, modifys, deletes ):
+        """Set of modifications and deletes"""
+        self.rev = rev
+        self.modifys = set( modifys )
+        self.deletes = set( deletes )
 
-    if not os.path.exists( os.path.dirname( target ) ): 
-        os.makedirs( os.path.dirname( target ) )
+    @staticmethod
+    def from_diffiter( rev, diffs ):
+        """Create a change set from a DiffIter"""
+        return ChangeSet( rev,
+                map( lambda d: d.b_blob, it.chain( 
+                    diffs.iter_change_type('A'),
+                    diffs.iter_change_type('M'),
+                    diffs.iter_change_type('R') ) ),
+                map( lambda d: d.a_blob, it.chain( 
+                    diffs.iter_change_type('R'),
+                    diffs.iter_change_type('D') ) )
+                )
 
-    cmd = "pandoc -s --template %s -o %s %s" % ( theme_path, target,
-            src )
+    @staticmethod
+    def from_repo( repo ):
+        """Create a basic change set from a Repo"""
+        adds = filter(lambda x: isinstance(x, git.Blob),
+                repo.tree().traverse()) 
+        return ChangeSet( None, adds, [] )
 
-    proc = sp.Popen( cmd.split() )
-    if proc.wait() == 0:
-        logging.info( "Compiled file %s", target)
-    else:
-        logging.info( "Error compiling file %s", target )
+    def __len__( self ):
+        return len( self.modifys ) + len( self.deletes )
 
-def extract_timestamps( conf, repo, blob, temp ):
-    """Extract a timestamp from a post file"""
-    # Get the commit times
-    commits = repo.blame( "HEAD", blob.path )
+    def filter( self, base ):
+        """Filter all changes from sets for this basename"""
+        # Ignore trailing and leading /
+        base = base.strip().strip("/")
+        modifys = filter( lambda b: dirname( b.path ) == base,
+                self.modifys)
+        deletes = filter( lambda b: dirname( b.path ) == base,
+                self.deletes)
 
-    # First check if the % data exists
-    try:
-        lines = open( temp ).readlines()
-        if len( lines ) >= 3 and lines[2].startswith("%"):
-            created = time.strptime( lines[2][1:].strip() )
+        return ChangeSet( self.rev, modifys, deletes )
+
+    def __sub__( self, cs ):
+        """Subtract another diff from this"""
+        return ChangeSet( self.rev, 
+                self.modifys - cs.modifys, 
+                self.deletes - cs.deletes
+                )
+
+    def pop( self, base ):
+        """Extract the change set corresponding to this base"""
+        cs = self.filter(base)
+        self -= cs
+        return cs
+
+class SiteGenerator:
+    """Static Site Generator"""
+    REV_NAME = "current" 
+
+    def __init__(self, conf_path):
+        """Create a site generator with settings in the conf file"""
+        self.conf = CP.ConfigParser()
+        self.conf.read( conf_path )
+
+        # Handle paths
+        incoming_path = self.conf.get( "paths", "incoming" )
+        if not pexists( incoming_path ):
+            raise ValueError( "%s does not exist"% incoming_path )
+        self.repo = git.Repo( incoming_path )
+
+        self.meta_path = self.conf.get( "paths", "meta" )
+        if not pexists( self.meta_path ):
+            os.makedirs( self.meta_path )
+        self.outgoing_path = self.conf.get( "paths", "outgoing" )
+
+        # Construct template dict
+        self.variables = dict( self.conf.items( "variables" ) )
+
+        # Configure the logger 
+        FORMAT = '%(asctime)-15s %(message)s'
+        logging.basicConfig( filename=pjoin( self.meta_path, "all.log" ),
+                level=logging.DEBUG, format=FORMAT )
+
+        # Path accessors
+    def metap( self, path ):
+        """Retrieve path from the meta-store"""
+        return pjoin( self.meta_path, path )
+
+    def meta( self, path, mode = 'r' ):
+        """Retrieve a file from the meta-store"""
+        path = self.metap(path)
+        if not pexists( dirname( path ) ): 
+            os.makedirs( dirname( path ) )
+        return open( path, mode )
+
+    def outgoingp( self, path ):
+        """Retrieve path from the meta-store"""
+        return pjoin( self.outgoing_path, path )
+
+    def outgoing( self, path, mode = 'r' ):
+        """Retrieve a file from the meta-store"""
+        path = self.outgoingp(path)
+        if not pexists( dirname( path ) ): 
+            os.makedirs( dirname( path ) )
+        return open( path, mode )
+
+    # Convenience functions
+    def template( self, in_path, out_path = None ): 
+        """Template in_path using the variables section"""
+        if out_path is None:
+            out_path = in_path
+        # Replace the template variables
+        buf = string.Template( open( in_path, "r").read()
+                ).safe_substitute( self.variables )
+        open( out_path, "w" ).write( buf )
+
+    def cache( self, name, blob_or_path): 
+        """Cache a file at path in the meta directory"""
+        if isinstance( blob_or_path, git.Blob ):
+            blob = blob_or_path
         else:
-            raise Exception
-    except Exception:
-        created = time.strptime( time.ctime(
-            commits[0][0].committed_date ) )
+            blob = self.repo.tree()[ blob_or_path ]
+        blob.stream_data( self.meta( name, "w" ) )
+        # If this is a text file, replace the template variables
+        ty = mimetypes.guess_type( blob.path )[0]
+        if ty is not None and ty.split("/")[0] == "text":
+            self.template( self.metap(name) )
 
-    updated = time.strptime( time.ctime(
-        commits[-1][0].committed_date ) )
-
-    return created, updated
-
-
-def compile_index( conf, repo, tree, target ):
-    """Compile an index of articles from a git tree""" 
-    # Get a list of files, their creation date, and last modification
-    # date
-    meta = conf.get( "paths", "meta" )
-    temp = os.path.join( meta, "_compile.md" )
-
-    idx = []
-    for blob in tree.blobs:
-        if blob.path.endswith(".html") or blob.path.endswith(PANDOC_EXTN):
-            # First line is reserved for title
-            blob.stream_data( open( temp, "w+b") )
-            title = open( temp ).readline().strip()
-            # If title starts with a %, delete
-            if title.startswith("%"):
-                title = title[1:].strip()
-
-            created, updated = extract_timestamps( conf, repo, blob, temp )
-
-            # Correct for compiled paths
-            if blob.path.endswith(".html"):
-                path = blob.path
-            else:
-                path = blob.path[:-len(PANDOC_EXTN)] + ".html"
-            idx.append( (title, created, updated, path) )
-
-    # Construct a markdown file from this
-    fstream = open( temp, "w" )
-    fstream.write( "%% %s\n\n"%(tree.name.capitalize()) )
-    idx.sort( key=lambda i: i[1], reverse=True )
-    for i in range(len(idx)):
-        title, created, updated, path = idx[i]
-        fstream.write( " %d. [%s](@ROOT@/%s) _(%s)_\n"%( i+1, title, path,
-            time.strftime( "%d %b %Y", created) ) )
-    fstream.close()
-
-    # Compile it
-    replace_constants( conf, temp )
-    run_pandoc( conf, temp, target )
-
-def save_theme( conf, repo ):
-    """Save the theme file from the git repo to a usable location"""
-    theme = conf.get( "paths", "theme" )
-    meta = conf.get( "paths", "meta" )
-    blob = repo.tree()[ theme ]
-    # Save to meta folder
-    path = os.path.join(meta, "theme.html")
-    blob.stream_data( open( path, "w") )
-    replace_constants( conf, path )
-    return path
-
-def save_file( conf, blob, target ):
-    """Save a blob as in to target""" 
-
-    if not os.path.exists( os.path.dirname( target ) ): 
-        os.makedirs( os.path.dirname( target ) )
-
-    fstream = open( target, "w" )
-    blob.stream_data( fstream )
-    fstream.close()
-    replace_constants( conf, target )
-    # Replace all occurances of @ROOT@ with
-    logging.info( "Copied over %s", target )
-
-def compile_file( conf, blob, target ):
-    """Compile an article from a git blob""" 
-    meta = conf.get( "paths", "meta" )
-    
-    path = os.path.join( meta, "_compile.md" )
-    fstream = open( path, "w+b" )
-    blob.stream_data( fstream )
-    fstream.close()
-    replace_constants( conf, path )
-
-    run_pandoc( conf, path, target )
-
-def get_current_rev( conf ):
-    """Try to the current revision from the meta files"""
-    meta = conf.get( "paths", "meta" )
-    rev = os.path.join( meta, "current_rev" )
-    if os.path.exists(rev):
-        rev = open( rev ).read().strip()
-        return rev
-    else:
-        return None
-
-def save_current_rev( conf, repo ):
-    """Try to the current revision from the meta files"""
-    meta = conf.get( "paths", "meta" )
-    rev = repo.commit().hexsha
-    open( os.path.join( meta, "current_rev" ), "w" ).write( rev )
-
-def get_changelist( conf, repo, rev=None ):
-    """Get list of files that have changed since the last update""" 
-    ignores = conf.get( "paths", "ignores" )
-    if rev:
-        # if a last update exists, then find diffs since the last rev
-        diffs = repo.index.diff( rev )
-        # Add all the b_blobs of this list
-        updates = list( it.ifilter( None, map( lambda d: d.b_blob, diffs ) )  )
-        deletes = map( lambda d: d.a_blob, it.chain(
-            diffs.iter_change_type('D'), diffs.iter_change_type('R') ) )
-    # Otherwise, just make everything in the gitrepo
-    else:
-        updates = filter(lambda x: isinstance( x, git.Blob),
-                repo.tree().traverse())
-        # TODO: Compare with existing files, and prune.
-        deletes = []
-    # Filter updates and deletes from the ignores list
-    updates = filter( lambda b: b.name not in ignores, updates )
-    deletes = filter( lambda b: b.name not in ignores, deletes )
-    return updates, deletes
-
-def update_files( conf, updates ):
-    """Update all files in update in outgoing"""
-    outgoing = conf.get( "paths", "outgoing" )
-    # Compile all the files
-    for blob in updates:
-        path = os.path.join( outgoing, blob.path )
-        if path.endswith( PANDOC_EXTN ):
-            path = path[:-len(PANDOC_EXTN)] + ".html"
-            compile_file( conf, blob, path )
+    def ignores( self, base ):
+        """Extract set of ignored files"""
+        if self.conf.has_section( base ) and self.conf.has_option( base,
+                "ignores" ):
+            ignores = self.conf.get( base, "ignores" ).split(',')
+            ignores = map( lambda fn: pjoin( base, fn.strip() ), ignores )
         else:
-            save_file( conf, blob, path)
+            ignores = []
+        return set( ignores )
 
-def delete_files( conf, deletes ):
-    """Delete all files in deletes from the outgoing"""
-    outgoing = conf.get( "paths", "outgoing" )
-    # Delete all said files from the target
-    for blob in deletes:
-        if blob.name.endswith( PANDOC_EXTN ):
-            path = blob.name[:-len(PANDOC_EXTN)] + ".html"
+    # Compilation
+    def pandoc( self, src, target ):
+        """Run pandoc on src to target. Uses conf to get theme"""
+
+        if not pexists( dirname( target ) ): 
+            os.makedirs( dirname( target ) )
+
+        cmd = "pandoc -s --mathjax --template %s -o %s %s" % (
+                self.metap("theme.html"), target, src )
+
+        proc = sp.Popen( cmd.split() )
+        if proc.wait() == 0:
+            logging.info( "Compiled file %s", target)
+        else:
+            logging.info( "Error compiling file %s", target )
+
+    def copy( self, infile, outfile ):
+        """Copy file from A to B"""
+        open( outfile, "w" ).write( open( infile, "r" ).read() )
+
+
+    def compile( self, blob ):
+        """Compile blob to outgoing"""
+        self.cache( blob.path, blob )
+
+        # Compile pandoc files
+        if blob.path.endswith( PANDOC_EXTN ):
+            path = self.outgoingp( blob.path[:-len(PANDOC_EXTN)] + ".html" )
+            self.pandoc( self.metap(blob.path), path )
+        else:
+            # Copy the rest
+            path = self.outgoingp( blob.path )
+            self.copy( self.metap(blob.path), path )
+
+    def delete( self, blob ):
+        """Delete blob from outgoing"""
+
+        # Handle extension changes
+        if blob.path.endswith( PANDOC_EXTN ):
+            path = blob.path[:-len(PANDOC_EXTN)] + ".html"
         else:
             path = blob.path
-        path = os.path.join( outgoing, path )
+        path = self.outgoingp( path )
         if os.path.exists( path ):
             os.unlink( path )
             logging.info( "Deleted %s", path)
-
-def has_index( conf, repo, section ):
-    """Checks if the section already has an index file"""
-    tree = repo.tree()
-    # HACK because "path in tree" doesn't work.
-    try:
-        if tree[os.path.join(section,"index.md")] != None:
-            return True
-    except KeyError:
-        pass
-    try:
-        if tree[os.path.join(section,"index.html")] != None:
-            return True
-    except KeyError:
-        pass
-    return False
-
-def create_indexes( conf, repo ):
-    """Create indexes for the sections in repo"""
-    outgoing = conf.get( "paths", "outgoing" )
-    sections = map( str.strip, conf.get("root","sections").split(',') )
-
-    tree = repo.tree()
-    for section in sections:
-        if section not in tree:
-            continue
-        # Check if the index already exists
-        if has_index( conf, repo, section ):
-            logging.info( "Not generating log for %s; already exists", section)
-            continue
         else:
-            section_tree = tree[section]
-            target = os.path.join( outgoing, section, "index.html" )
-            compile_index( conf, repo, section_tree, target )
-            logging.info( "Built index for section %s", section )
-        
+            logging.info( "Not found: %s", path)
+
+    # Update handlers
+    def changes( self, rev = None ):
+        """Get list of all files that need to be compiled at this level"""
+        if rev:
+            diffs = self.repo.index.diff( rev )
+            # Add all the b_blobs of this list
+            return ChangeSet.from_diffiter( rev, diffs )
+        else:
+            return ChangeSet.from_repo( self.repo )
+
+    def apply( self, tree, cs ):
+        """Recursively apply the changeset in this directory base"""
+        base = tree.path
+
+        if len(cs) == 0: 
+            return
+        ignores = self.ignores( base )
+
+        # Apply updates to all files
+        cs_ = cs.pop( base )
+        logging.info( "Applying %d changes in %s", len(cs_), base )
+        for blob in cs_.modifys.difference( ignores ):
+            self.compile( blob )
+        for blob in cs_.deletes.difference( ignores ):
+            self.delete( blob )
+
+        # Recurse
+        for t in tree.trees:
+            cs = self.apply( t, cs )
+
+        # Update index
+        self.build_index( tree )
+
+        return cs
+
+    def extract_meta( self, blob ):
+        """Extract a timestamp from a post file"""
+        self.cache( blob.path, blob )
+        lines = self.meta( blob.path ).readlines()
+
+        commits = self.repo.blame( "HEAD", blob.path )
+
+        # First line is reserved for title
+        # If title starts with a %, delete
+        if blob.path.endswith( PANDOC_EXTN ):
+            title = lines[0].strip()
+            if title.startswith("%"):
+                title = title[1:].strip()
+        else:
+            title = "`%s`" % blob.path
+
+        if len( lines ) >= 3 and lines[2].startswith("%"):
+            try:
+                created = get_date( ["%d %b %Y"], lines[2][1:].strip() )
+            except ValueError:
+                created = time.strptime( time.ctime(
+                    commits[0][0].committed_date ) )
+        else:
+            created = time.strptime( time.ctime(
+                commits[0][0].committed_date ) )
+
+        updated = time.strptime( time.ctime(
+            commits[-1][0].committed_date ) )
+        return title, created, updated
+
+    # Index generation
+    def build_index(self, tree):
+        """Build index for tree"""
+        base = tree.path
+
+        # TODO: Replace template variables
+        if "index.md" in tree or "index.html" in tree:
+            logging.info( "Keeping existing index for %s", base )
+            return
+        logging.info( "Building index for %s", base )
+
+        # Create index of all files
+        idx = []
+        for blob in tree.blobs:
+            title, created, updated = self.extract_meta( blob )
+
+            if blob.path.endswith(PANDOC_EXTN):
+                path = blob.path[:-len(PANDOC_EXTN)] + ".html"
+            else:
+                path = blob.path
+            idx.append( (title, created, updated, path) )
+
+        fd = self.meta( pjoin(base, "index.md"), "w" )
+        fd.write( "%% %s\n\n"%(tree.name.capitalize()) )
+        idx.sort( key=lambda i: i[1], reverse=True )
+        for i in range(len(idx)):
+            title, created, updated, path = idx[i]
+            fd.write( " %d. [%s]($urlroot/%s) _(%s)_\n"%( len(idx) - i,
+                title, path, time.strftime( "%d %b %Y", created) ) )
+        fd.close()
+        self.template( self.metap( pjoin(base, "index.md") ) )
+
+        # If no existing index, build an index
+        logging.info( "Updating index for %s", base )
+
+    # Entry point
+    def build(self, incremental = False):
+        """Build the site"""
+
+        print "Building (incremental=%s)..."% str(incremental)
+        logging.info( "Build initiated with incremental = %s",
+                str(incremental) )
+
+        theme = self.conf.get( "/", "theme" )
+        self.cache( "theme.html", theme )
+
+        # Get the change list
+        rev = None
+        if incremental:
+            if( pexists( self.metap( self.REV_NAME ) ) ):
+                rev = self.meta( self.REV_NAME ).read().strip()
+        cs = self.changes( rev ) 
+
+        # Apply recursively from the root
+        self.apply( self.repo.tree(), cs )
+
+        rev = self.repo.commit().hexsha
+        self.meta( self.REV_NAME, "w" ).write( rev )
+
 def main( conf_path, incremental = False ):
     """Sitegen entry point"""
-    conf = CP.ConfigParser()
-    conf.read( conf_path )
-    incoming = conf.get( "paths", "incoming" )
-    meta = conf.get( "paths", "meta" )
 
-    if not os.path.exists( meta ):
-        os.makedirs( meta )
-    # Configure the logger 
-
-    FORMAT = '%(asctime)-15s %(message)s'
-    logging.basicConfig( filename=os.path.join( meta, "all.log" ),
-            level=logging.DEBUG, format=FORMAT )
-
-    # Check the repo
-    repo = git.Repo( incoming )
-
-    # Save the theme
-    save_theme( conf, repo )
-
-    # Get updates
-    rev = get_current_rev( conf ) if incremental else None
-    updates, deletes = get_changelist( conf, repo, rev )
-    logging.info( "Updating %d, Deleting %d", len(updates), len(deletes) )
-    update_files( conf, updates )
-    delete_files( conf, deletes )
-
-    # Create indexes for all the sections
-    create_indexes( conf, repo )
-
-    # Save the current revision to the meta file for incremental updates
-    save_current_rev(conf, repo)
+    gen = SiteGenerator( conf_path )
+    gen.build( incremental )
 
 if __name__ == "__main__":
     import argparse
