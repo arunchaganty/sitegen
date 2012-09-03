@@ -87,6 +87,10 @@ class ChangeSet:
         self -= cs
         return cs
 
+    def exists( self, path ):
+        """Extract the change set corresponding to this base"""
+        return path in self.modifys or path in self.deletes 
+
 class SiteGenerator:
     """Static Site Generator"""
     REV_NAME = "current" 
@@ -154,7 +158,11 @@ class SiteGenerator:
             blob = blob_or_path
         else:
             blob = self.repo.tree()[ blob_or_path ]
-        blob.stream_data( self.meta( name, "w" ) )
+        # For working tree files
+        if blob.binsha == blob.NULL_BIN_SHA:
+            self.copy( blob.abspath, self.metap( name ) )
+        else:
+            blob.stream_data( self.meta( name, "w" ) )
         # If this is a text file, replace the template variables
         ty = mimetypes.guess_type( blob.path )[0]
         if ty is not None and ty.split("/")[0] == "text":
@@ -169,6 +177,13 @@ class SiteGenerator:
         else:
             ignores = []
         return set( ignores )
+
+    def current_rev( self ):
+        """Get the current revision from meta folder"""
+        if( pexists( self.metap( self.REV_NAME ) ) ):
+            return self.meta( self.REV_NAME ).read().strip()
+        else:
+            return None
 
     # Compilation
     def pandoc( self, src, target ):
@@ -220,14 +235,10 @@ class SiteGenerator:
             logging.info( "Not found: %s", path)
 
     # Update handlers
-    def changes( self, rev = None ):
+    def changes( self, from_rev, to_rev = None ):
         """Get list of all files that need to be compiled at this level"""
-        if rev:
-            diffs = self.repo.index.diff( rev )
-            # Add all the b_blobs of this list
-            return ChangeSet.from_diffiter( rev, diffs )
-        else:
-            return ChangeSet.from_repo( self.repo )
+        diffs = self.repo.commit( from_rev ).diff( to_rev )
+        return ChangeSet.from_diffiter( from_rev, diffs )
 
     def apply( self, tree, cs ):
         """Recursively apply the changeset in this directory base"""
@@ -284,13 +295,21 @@ class SiteGenerator:
             commits[-1][0].committed_date ) )
         return title, created, updated
 
+    def find(self, tree, x):
+        """Workaround because x in tree doesn't work"""
+        try:
+            return tree[x]
+        except KeyError:
+            return None
+
     # Index generation
     def build_index(self, tree):
         """Build index for tree"""
         base = tree.path
 
         # TODO: Replace template variables
-        if "index.md" in tree or "index.html" in tree:
+        if self.find( tree, "index.md" ) is not None or self.find( tree,
+                "index.html" ) is not None:
             logging.info( "Keeping existing index for %s", base )
             return
         logging.info( "Building index for %s", base )
@@ -311,43 +330,50 @@ class SiteGenerator:
         idx.sort( key=lambda i: i[1], reverse=True )
         for i in range(len(idx)):
             title, created, updated, path = idx[i]
-            fd.write( " %d. [%s]($urlroot/%s) _(%s)_\n"%( len(idx) - i,
+            fd.write( " %d. [%s]($urlroot/%s) _(%s)_\n"%( i+1,
                 title, path, time.strftime( "%d %b %Y", created) ) )
         fd.close()
         self.template( self.metap( pjoin(base, "index.md") ) )
+        self.pandoc( self.metap( pjoin(base, "index.md") ), 
+                self.outgoingp( pjoin(base, "index.html") ) ) 
 
         # If no existing index, build an index
         logging.info( "Updating index for %s", base )
 
     # Entry point
-    def build(self, incremental = False):
-        """Build the site"""
+    def build(self, from_rev, to_rev, incremental = False):
+        """Build the site to head_rev"""
 
         print "Building (incremental=%s)..."% str(incremental)
         logging.info( "Build initiated with incremental = %s",
                 str(incremental) )
 
-        theme = self.conf.get( "/", "theme" )
-        self.cache( "theme.html", theme )
+        if from_rev is None:
+            from_rev = self.current_rev()
+        if from_rev is None or not incremental:
+            cs = ChangeSet.from_repo( self.repo )
+        else:
+            cs = self.changes( from_rev, to_rev ) 
 
-        # Get the change list
-        rev = None
-        if incremental:
-            if( pexists( self.metap( self.REV_NAME ) ) ):
-                rev = self.meta( self.REV_NAME ).read().strip()
-        cs = self.changes( rev ) 
+        # Check if the theme has been modified
+        theme = self.conf.get( "/", "theme" )
+        if cs.exists( theme ):
+            # Oh noes, theme has been changed recompile
+            cs = ChangeSet.from_repo( self.repo )
+
+        self.cache( "theme.html", theme )
 
         # Apply recursively from the root
         self.apply( self.repo.tree(), cs )
 
-        rev = self.repo.commit().hexsha
-        self.meta( self.REV_NAME, "w" ).write( rev )
+        save_rev = self.repo.commit().hexsha if to_rev == None else to_rev
+        self.meta( self.REV_NAME, "w" ).write( save_rev )
 
-def main( conf_path, incremental = False ):
+def main( conf_path, from_rev, to_rev, incremental = False ):
     """Sitegen entry point"""
 
     gen = SiteGenerator( conf_path )
-    gen.build( incremental )
+    gen.build( from_rev, to_rev, incremental )
 
 if __name__ == "__main__":
     import argparse
@@ -357,7 +383,11 @@ if __name__ == "__main__":
             help="Path to configuration file" ) 
     PARSER.add_argument( "-i", dest="incremental", action='store_true',
             default=False, help="Incrementally generate files" ) 
+    PARSER.add_argument( "-f", dest="from_rev",
+            default=None, help="Recompile from this rev. Needs -i" ) 
+    PARSER.add_argument( "-t", dest="to_rev",
+            default=None, help="Recompile to this rev, from current. Needs -i" ) 
     ARGS = PARSER.parse_args()
 
-    main( ARGS.conf, ARGS.incremental )
+    main( ARGS.conf, ARGS.from_rev, ARGS.to_rev, ARGS.incremental )
 
