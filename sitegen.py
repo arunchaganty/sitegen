@@ -14,6 +14,9 @@ import ConfigParser as CP
 import itertools as it
 PANDOC_EXTN = ".md"
 
+import pdt
+cal = pdt.Calendar() # Using PDT for robust date parsing.
+
 pexists = os.path.exists
 pjoin = os.path.join
 dirname = os.path.dirname
@@ -23,14 +26,26 @@ mimetypes.add_type( "text/markdown", PANDOC_EXTN )
 
 def get_date( fmts, data ):
     """Try to get the date by sequentially matching patterns"""
+    # First try strptime
     for fmt in fmts:
         try:
             return time.strptime( fmt, data )
         except ValueError:
             pass
-    # Use the default format
-    return time.strptime( data )
+    try:
+        return time.strptime( data )
+    except ValueError:
+        pass
 
+    # Then try PDT
+    try:
+        return time.struct_time( cal.parseDateText( data ) )
+    except AttributeError:
+        pass
+    except KeyError:
+        pass
+
+    raise ValueError
 
 class ChangeSet:
     """Store set of changes"""
@@ -281,13 +296,24 @@ class SiteGenerator:
         else:
             title = "`%s`" % blob.path
 
+        # Get the date
+        created = None
+        fmts = ["%b %d %Y", "%B %d %Y", "%d %b %Y"]
         if len( lines ) >= 3 and lines[2].startswith("%"):
             try:
-                created = get_date( ["%d %b %Y"], lines[2][1:].strip() )
+                created = get_date( fmts, lines[2][1:].strip() )
             except ValueError:
-                created = time.strptime( time.ctime(
-                    commits[0][0].committed_date ) )
-        else:
+                created = None
+
+        # Try using the title as a name (works for diary entries)
+        if created is None:
+            try:
+                created = get_date( fmts, title )
+            except ValueError:
+                created = None
+
+        # Give up and use the commit time
+        if created is None:
             created = time.strptime( time.ctime(
                 commits[0][0].committed_date ) )
 
