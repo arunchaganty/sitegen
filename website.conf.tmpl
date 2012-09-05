@@ -4,20 +4,24 @@
 incoming = <path>
 # Describe where your actual static website is hosted.
 outgoing =  <path>
-# meta-path
+# meta-data-path
 meta = .sitegen
+
+# The variables in this section will be replaced in all the files.
+# E.g. urlroot = "/home/" will translate $urlroot/img/boo.jpg to
+# "/home/img/boo.jpg"
+[variables]
+urlroot = /~teju/arun
+
+# Some configuration for the top-level
+[/]
 # Theme (used by pandoc)
 theme =  theme.html
-# Webpage root
-urlroot = <path>
-# Ignore copying to site
-ignores = README.md, theme.html
-
-# What does the home page contain
-[root]
-# Create indexes for these sections
-sections = articles, blog, research, projects, links, about
-homepage = home.html
-
-# Each section can be also customised.
+# Do not process
+ignore = archive/, README.md, theme.html, listing.html
+# Process these
+# sections = articles, blog, research, projects
+# Do not indexes for these sections
+ignore-index = css/, files/, js/, images
+# sections = articles, blog, research, projects
 
