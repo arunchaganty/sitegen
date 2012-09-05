@@ -207,7 +207,7 @@ class SiteGenerator:
         if not pexists( dirname( target ) ): 
             os.makedirs( dirname( target ) )
 
-        cmd = "pandoc -s --mathjax --template %s -o %s %s" % (
+        cmd = "pandoc --mathjax -s --template %s -o %s %s" % (
                 self.metap("theme.html"), target, src )
 
         proc = sp.Popen( cmd.split() )
