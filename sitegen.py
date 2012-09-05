@@ -218,6 +218,8 @@ class SiteGenerator:
 
     def copy( self, infile, outfile ):
         """Copy file from A to B"""
+        if not pexists( dirname( outfile ) ):
+            os.makedirs( dirname( outfile ) )
         open( outfile, "w" ).write( open( infile, "r" ).read() )
 
 
